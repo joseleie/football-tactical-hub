@@ -2,11 +2,17 @@ import streamlit as st
 
 from core import MAP_MODES, draw_pitch_map, extract_xy, load_scope
 
-ctx = st.session_state["ctx"]
 matches = st.session_state["matches"]
 
 st.title("🎯 Análisis de un partido")
-st.caption(ctx["label"])
+if matches.empty:
+    st.warning("No hay partidos con estos filtros.")
+    st.stop()
+
+scopes = (matches.assign(scope=matches["competition"] + " · " + matches["season"])
+          .groupby("scope")["match_date"].max().sort_values(ascending=False).index.tolist())
+scope = st.selectbox("Competición · temporada", scopes, key="w_match_scope")
+matches = matches[(matches["competition"] + " · " + matches["season"]) == scope].sort_values("match_date")
 
 labels = {
     int(r["match_id"]): f"{r['home_team']} {r['home_score']} - {r['away_score']} {r['away_team']} ({r['match_date']})"

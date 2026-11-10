@@ -5,23 +5,29 @@ import streamlit as st
 
 from core import (
     COUNT_METRICS, MAP_MODES, draw_pitch_map, extract_xy, load_scope, player_match_stats,
-    player_summary, select_player, select_team, team_matches, teams_of,
+    player_summary, scope_selector, select_player, select_team, team_counts, team_matches, teams_of,
 )
 
-ctx = st.session_state["ctx"]
 matches = st.session_state["matches"]
+all_matches = st.session_state["matches_all"]
 ICON = {"V": "🟢 V", "E": "🟡 E", "D": "🔴 D"}
 
 st.title("👤 Página de jugador")
-st.caption(ctx["label"])
 
 teams = teams_of(matches)
+cur = st.session_state.get("team")
+if cur and cur not in teams:
+    teams = sorted(teams + [cur])
 top1, top2 = st.columns(2)
 with top1:
-    team = select_team(teams, key="w_team_jugador")
+    team = select_team(teams, key="w_team_jugador", counts=team_counts(all_matches))
 
-tm = team_matches(matches, team)
-ev, minutes = load_scope(tuple(int(i) for i in tm["match_id"]))
+base = matches if team in set(teams_of(matches)) else all_matches
+tm_all = team_matches(base, team)
+if (tm_all["source"] == "StatsBomb").sum() == 0:
+    st.info("Este equipo no tiene partidos con eventos detallados.")
+    st.stop()
+tm, ev, minutes = scope_selector(tm_all, key=f"scope_jugador_{team}")
 if ev.empty:
     st.error("No se pudieron cargar los eventos de este equipo.")
     st.stop()

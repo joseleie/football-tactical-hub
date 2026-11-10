@@ -1,37 +1,40 @@
 import streamlit as st
 
-from core import get_competitions, get_matches
+from core import get_all_matches
 
 st.set_page_config(page_title="Football Tactical Data Hub", page_icon="⚽", layout="wide")
 
-# ---------- Filtros globales de competición (válidos para todas las páginas) ----------
-comps = get_competitions()
-st.sidebar.header("🏆 Competición")
-country = st.sidebar.selectbox("País / Categoría", sorted(comps["country_name"].unique()), key="g_country")
-c_df = comps[comps["country_name"] == country]
-comp = st.sidebar.selectbox("Torneo", sorted(c_df["competition_name"].unique()), key="g_comp")
-s_df = c_df[c_df["competition_name"] == comp].sort_values("season_name", ascending=False)
-season = st.sidebar.selectbox("Temporada", s_df["season_name"].tolist(), key="g_season")
-row = s_df[s_df["season_name"] == season].iloc[0]
+# ---------- Catálogo completo de StatsBomb + filtros globales (por defecto: TODO) ----------
+all_matches = get_all_matches()
+st.session_state["matches_all"] = all_matches
+st.session_state.setdefault("extra_matches", None)  # partidos de otras fuentes cargados en "Fuentes"
 
-new_ctx = {
-    "comp_id": int(row["competition_id"]),
-    "season_id": int(row["season_id"]),
-    "label": f"{comp} · {season}",
-}
-if st.session_state.get("ctx") != new_ctx:
-    # Al cambiar de competición se reinician las selecciones de equipo y jugador
-    st.session_state["ctx"] = new_ctx
-    st.session_state["team"] = None
-    st.session_state["player"] = None
-    st.session_state["roster_team"] = None
-st.session_state["matches"] = get_matches(new_ctx["comp_id"], new_ctx["season_id"])
+st.sidebar.header("🔎 Filtros del catálogo")
+gender = st.sidebar.radio("Género", ["Todos", "Masculino", "Femenino"], horizontal=True, key="f_gender")
+df = all_matches if gender == "Todos" else all_matches[all_matches["gender"] == gender]
+
+comps = sorted(df["competition"].unique())
+st.session_state["f_comp"] = [c for c in st.session_state.get("f_comp", []) if c in comps]
+sel_c = st.sidebar.multiselect("Competición", comps, key="f_comp", placeholder="Todas las competiciones")
+if sel_c:
+    df = df[df["competition"].isin(sel_c)]
+
+seasons = sorted(df["season"].unique(), reverse=True)
+st.session_state["f_season"] = [s for s in st.session_state.get("f_season", []) if s in seasons]
+sel_s = st.sidebar.multiselect("Temporada", seasons, key="f_season", placeholder="Todas las temporadas")
+if sel_s:
+    df = df[df["season"].isin(sel_s)]
+
+st.session_state["matches"] = df.reset_index(drop=True)
+st.sidebar.caption(f"{len(df):,} de {len(all_matches):,} partidos de StatsBomb en el filtro")
+st.sidebar.divider()
 
 pages = [
     st.Page("views/portada.py", title="Portada", icon="🏠", default=True),
+    st.Page("views/competiciones.py", title="Competiciones", icon="🏆"),
     st.Page("views/equipo.py", title="Equipo", icon="🛡️"),
     st.Page("views/jugador.py", title="Jugador", icon="👤"),
     st.Page("views/partido.py", title="Análisis de partido", icon="🎯"),
-    st.Page("views/tiros.py", title="Tiros recientes", icon="🥅"),
+    st.Page("views/fuentes.py", title="Fuentes de datos", icon="🔌"),
 ]
 st.navigation(pages).run()

@@ -46,6 +46,42 @@ def get_competitions():
     return sb.competitions(creds={})
 
 
+@st.cache_data(show_spinner="Cargando el catálogo completo de StatsBomb (solo la primera vez)...", ttl=86400)
+def get_all_matches() -> pd.DataFrame:
+    """TODOS los partidos de TODAS las competiciones y temporadas abiertas, en un único esquema."""
+    from normalize import norm_key
+
+    comps = get_competitions()
+    pairs = comps.drop_duplicates(["competition_id", "season_id"]).to_dict("records")
+
+    def fetch(p):
+        try:
+            m = sb.matches(competition_id=int(p["competition_id"]), season_id=int(p["season_id"]), creds={})
+        except Exception:
+            return None
+        m = m.copy()
+        m["competition"] = p["competition_name"]
+        m["season"] = p["season_name"]
+        m["country"] = p["country_name"]
+        m["gender"] = "Femenino" if str(p.get("competition_gender", "")).lower() == "female" else "Masculino"
+        m["competition_id"] = int(p["competition_id"])
+        m["season_id"] = int(p["season_id"])
+        return m
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        frames = [f for f in ex.map(fetch, pairs) if f is not None]
+    df = pd.concat(frames, ignore_index=True)
+    df["source"] = "StatsBomb"
+    df["match_id"] = df["match_id"].astype(int)
+    df["match_date"] = df["match_date"].astype(str)
+    cols = ["source", "competition", "season", "country", "gender", "competition_id", "season_id", "match_id",
+            "match_date", "home_team", "away_team", "home_score", "away_score"]
+    df = df[cols].sort_values("match_date").reset_index(drop=True)
+    df["home_key"] = df["home_team"].map(norm_key)
+    df["away_key"] = df["away_team"].map(norm_key)
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def get_matches(comp_id: int, season_id: int) -> pd.DataFrame:
     m = sb.matches(competition_id=int(comp_id), season_id=int(season_id), creds={})
@@ -118,15 +154,23 @@ def teams_of(matches: pd.DataFrame) -> list:
 
 def team_matches(matches: pd.DataFrame, team: str) -> pd.DataFrame:
     m = matches[(matches["home_team"] == team) | (matches["away_team"] == team)].copy()
+    m = m.dropna(subset=["home_score", "away_score"])
+    for c, default in (("source", ""), ("competition", ""), ("season", ""), ("home_xg", np.nan), ("away_xg", np.nan)):
+        if c not in m.columns:
+            m[c] = default
     home = m["home_team"] == team
     m["rival"] = np.where(home, m["away_team"], m["home_team"])
     m["condicion"] = np.where(home, "Local", "Visitante")
     m["gf"] = np.where(home, m["home_score"], m["away_score"]).astype(float).astype(int)
     m["gc"] = np.where(home, m["away_score"], m["home_score"]).astype(float).astype(int)
+    m["xgf"] = np.where(home, m["home_xg"], m["away_xg"]).astype(float)
+    m["xgc"] = np.where(home, m["away_xg"], m["home_xg"]).astype(float)
     m["resultado"] = np.select([m["gf"] > m["gc"], m["gf"] == m["gc"]], ["V", "E"], "D")
     m["puntos"] = m["resultado"].map({"V": 3, "E": 1, "D": 0})
     m["marcador"] = m["gf"].astype(str) + " - " + m["gc"].astype(str)
-    return m[["match_id", "match_date", "rival", "condicion", "marcador", "gf", "gc", "resultado", "puntos"]].reset_index(drop=True)
+    cols = ["source", "competition", "season", "match_id", "match_date", "rival", "condicion", "marcador",
+            "gf", "gc", "resultado", "puntos", "xgf", "xgc"]
+    return m[cols].sort_values("match_date").reset_index(drop=True)
 
 
 def standings(matches: pd.DataFrame) -> pd.DataFrame:
@@ -226,10 +270,11 @@ def require_context():
     return ctx
 
 
-def select_team(teams: list, key: str, label: str = "Equipo") -> str:
+def select_team(teams: list, key: str, label: str = "Equipo", counts: dict | None = None) -> str:
     cur = st.session_state.get("team")
     idx = teams.index(cur) if cur in teams else 0
-    sel = st.selectbox(label, teams, index=idx, key=key)
+    fmt = (lambda t: f"{t} ({counts.get(t, 0)} partidos)") if counts else (lambda t: t)
+    sel = st.selectbox(label, teams, index=idx, key=key, format_func=fmt)
     if sel != st.session_state.get("team"):
         st.session_state["player"] = None
     st.session_state["team"] = sel
@@ -292,3 +337,49 @@ def draw_pitch_map(plot_df: pd.DataFrame, mode: str):
             pitch.scatter(plot_df["x"], plot_df["y"], ax=ax, color="yellow", s=60, alpha=0.8, zorder=3)
     st.pyplot(fig)
     plt.close(fig)
+
+
+# ---------------------------------------------------------------------
+# Ámbito de estadísticas detalladas (evita cargar miles de partidos de golpe)
+# ---------------------------------------------------------------------
+MAX_MATCHES = 150
+WARN_MATCHES = 60
+
+
+def scope_selector(tm_all: pd.DataFrame, key: str):
+    """Deja elegir competición·temporada y carga los eventos de esos partidos. Devuelve (tm, ev, minutos)."""
+    tm_all = tm_all[tm_all["source"] == "StatsBomb"].copy()
+    tm_all["scope"] = tm_all["competition"] + " · " + tm_all["season"]
+    order = tm_all.groupby("scope")["match_date"].max().sort_values(ascending=False).index.tolist()
+    counts = tm_all["scope"].value_counts()
+    c1, c2 = st.columns([4, 1])
+    sel = c1.multiselect(
+        "Ámbito de estadísticas detalladas (competición · temporada)", order, default=order[:1],
+        format_func=lambda s: f"{s} ({counts[s]} partidos)", key=key,
+    )
+    if c2.button("Todas", key=key + "_all", help="Selecciona todas las temporadas disponibles de este equipo"):
+        st.session_state[key] = order
+        st.rerun()
+    if not sel:
+        st.info("Elige al menos una competición y temporada.")
+        st.stop()
+    tm = tm_all[tm_all["scope"].isin(sel)].reset_index(drop=True)
+    if len(tm) > MAX_MATCHES:
+        st.error(f"Has seleccionado {len(tm)} partidos; el máximo para cargar eventos es {MAX_MATCHES}. Reduce las temporadas.")
+        st.stop()
+    if len(tm) > WARN_MATCHES and not st.checkbox(f"Cargar {len(tm)} partidos (tardará y usa bastante memoria)", key=key + "_ok"):
+        st.warning("Marca la casilla para cargar los eventos de tantos partidos.")
+        st.stop()
+    ev, minutes = load_scope(tuple(int(i) for i in tm["match_id"]))
+    return tm, ev, minutes
+
+
+def team_matches_by_key(df: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Partidos de un equipo identificado por su clave normalizada (une nombres distintos entre fuentes)."""
+    names = set(df.loc[df["home_key"] == key, "home_team"]) | set(df.loc[df["away_key"] == key, "away_team"])
+    frames = [team_matches(df, n) for n in names]
+    return pd.concat(frames, ignore_index=True).sort_values("match_date") if frames else pd.DataFrame()
+
+
+def team_counts(matches: pd.DataFrame) -> dict:
+    return pd.concat([matches["home_team"], matches["away_team"]]).value_counts().to_dict()
