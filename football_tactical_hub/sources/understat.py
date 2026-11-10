@@ -11,7 +11,7 @@ LEAGUES = {
     "GER-Bundesliga": ("Bundesliga", "Alemania"),
     "FRA-Ligue 1": ("Ligue 1", "Francia"),
 }
-SEASONS = [str(y) for y in range(2025, 2013, -1)]  # año de inicio: 2025 = 2025/2026
+SEASONS = [str(y) for y in range(2026, 2013, -1)]  # año de inicio: 2026 = 2026/2027
 
 
 def _sd(league: str, season: str):

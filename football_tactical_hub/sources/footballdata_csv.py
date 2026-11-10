@@ -21,7 +21,7 @@ LEAGUES = {
     "N1": ("Eredivisie", "Países Bajos"), "B1": ("Jupiler Pro League", "Bélgica"),
     "P1": ("Primeira Liga", "Portugal"), "T1": ("Süper Lig", "Turquía"), "G1": ("Super League", "Grecia"),
 }
-SEASONS = [season_label(y) for y in range(2025, 1993, -1)]  # "2025/2026" ... "1994/1995"
+SEASONS = [season_label(y) for y in range(2026, 1993, -1)]  # "2025/2026" ... "1994/1995"
 
 EXTRA = {  # columna origen -> nombre unificado
     "HS": "home_shots", "AS": "away_shots", "HST": "home_shots_on_target", "AST": "away_shots_on_target",

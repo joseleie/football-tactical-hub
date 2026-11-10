@@ -17,7 +17,7 @@ COMPETITIONS = {
     "BSA": ("Brasileirão Série A", "Brasil"), "CL": ("UEFA Champions League", "Europa"),
     "EC": ("Eurocopa", "Europa"), "WC": ("Copa del Mundo", "Mundial"),
 }
-SEASONS = [str(y) for y in range(2025, 2013, -1)]  # año de inicio
+SEASONS = [str(y) for y in range(2026, 2013, -1)]  # año de inicio
 
 
 def get_token() -> str | None:
