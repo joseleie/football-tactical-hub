@@ -4,3 +4,4 @@ numpy>=1.24.0
 statsbombpy>=1.4.0
 matplotlib>=3.7.0
 mplsoccer>=1.2.0
+soccerdata>=1.8.0
