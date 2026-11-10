@@ -1,44 +1,34 @@
-# ⚽ Football Tactical Data Hub (Pro Edition)
+# ⚽ Football Tactical Data Hub
 
-Plataforma avanzada de análisis táctico y visualización de datos abiertos de fútbol construida con **Python**, **Streamlit** y **mplsoccer**.
+App multipágina en **Streamlit** con datos abiertos de **StatsBomb** (y tiros recientes de Understat).
 
-## 🚀 Características Principales
-- **Conexión Directa a la API de StatsBomb:** Extracción automatizada de partidos, competiciones y eventos tácticos (pases, conducciones, presiones, tiros, recuperaciones).
-- **Filtros Tácticos Avanzados:** Selección por equipo, filtrado multi-jugador y tipos de eventos específicos.
-- **Visualización Espacial:** 
-  - Mapa de Dispersión (Scattering) interactivo sobre terreno de juego reglamentario.
-  - Mapa de Calor de Densidad Táctica (KDE) para identificar zonas de mayor actividad e influencia.
-- **Inspección de Datos en Bruto:** Tablas interactivas integradas para auditar los dataframes de eventos.
+## Páginas
+- **Portada**: KPIs de la competición, buscador de equipo y jugador, clasificación y goles a favor/en contra.
+- **Equipo**: todos sus partidos, agregados y comparativa (local/visitante, a favor/en contra), tabla de jugadores y mapa agregado.
+- **Jugador**: todos los partidos donde jugó, evolución, comparativa por 90 minutos (con compañeros u otro jugador) y mapa agregado.
+- **Análisis de partido**: mapas tácticos de un partido concreto.
+- **Tiros recientes**: tiros y xG de grandes ligas (Understat).
 
----
-
-## 🛠️ Requisitos de Instalación
-
-Asegúrate de tener Python instalado y ejecuta los siguientes comandos en tu terminal:
-
-```bash
-git clone https://github.com/tu-usuario/football-tactical-hub.git
-cd football-tactical-hub
-pip install -r requirements.txt
+## Estructura
+```
+football_tactical_hub/
+├── app.py            # navegación + filtros globales de competición
+├── core.py           # carga de datos y estadísticas
+├── views/            # una página por archivo
+├── requirements.txt
+└── .streamlit/config.toml
 ```
 
----
-
-## ▶️ Cómo Ejecutar la Aplicación
-
-Inicia el servidor local de Streamlit ejecutando:
-
+## Ejecución local
 ```bash
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Se abrirá automáticamente una ventana en tu navegador web con el entorno visual interactivo.
+## Despliegue (Streamlit Community Cloud)
+Main file path: `football_tactical_hub/app.py` (o `app.py` si está en la raíz del repositorio).
 
----
-
-## 📦 Dependencias (`requirements.txt`)
-- `streamlit`
-- `pandas`
-- `statsbombpy`
-- `matplotlib`
-- `mplsoccer`
+## Notas
+- La primera carga de un equipo descarga todos sus partidos (unos segundos); después queda en caché.
+- Las tandas de penaltis no cuentan en goles ni xG.
+- Datos: [StatsBomb Open Data](https://github.com/statsbomb/open-data). Cita a StatsBomb si publicas análisis.
