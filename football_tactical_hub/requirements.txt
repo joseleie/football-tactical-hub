@@ -1,0 +1,5 @@
+streamlit>=1.30.0
+pandas>=2.0.0
+statsbombpy>=1.4.0
+matplotlib>=3.7.0
+mplsoccer>=1.2.0
