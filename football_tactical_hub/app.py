@@ -1,127 +1,146 @@
-import streamlit as st
-import pandas as pd
-from statsbombpy import sb
-import matplotlib.pyplot as plt
-from mplsoccer import Pitch
+import warnings
 
-# Configuración de la página del Mini Site
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+from mplsoccer import Pitch
+from statsbombpy import sb
+
+warnings.filterwarnings("ignore")
+
 st.set_page_config(page_title="Football Tactical Data Hub - Pro", page_icon="⚽", layout="wide")
 
 st.title("⚽ Tactical Data Analyzer Hub (Pro Edition)")
-st.markdown("Plataforma avanzada de análisis táctico con filtrado por jugador y mapas de calor espaciales (Datos abiertos de StatsBomb).")
+st.markdown(
+    "Plataforma de análisis táctico con filtrado por jugador y mapas de calor espaciales "
+    "(datos abiertos de StatsBomb)."
+)
 
-@st.cache_data
+
+# ---------- Carga de datos (con caché) ----------
+@st.cache_data(show_spinner=False)
 def get_competitions():
-    return sb.competitions()
+    return sb.competitions(creds={})
+
+
+@st.cache_data(show_spinner=False)
+def get_matches(c_id, s_id):
+    return sb.matches(competition_id=c_id, season_id=s_id, creds={})
+
+
+@st.cache_data(show_spinner=False)
+def get_match_events(m_id):
+    return sb.events(match_id=m_id, creds={})
+
 
 comps_df = get_competitions()
 
-# Barra lateral: Configuración de Competición
-st.sidebar.header("1. Competición y Torneo")
-country_list = comps_df['country_name'].unique()
-selected_country = st.sidebar.selectbox("Selecciona País / Categoría", country_list)
+# ---------- 1. Competición, torneo y temporada ----------
+st.sidebar.header("1. Competición y Temporada")
+selected_country = st.sidebar.selectbox("País / Categoría", sorted(comps_df["country_name"].unique()))
+country_comps = comps_df[comps_df["country_name"] == selected_country]
 
-filtered_comps = comps_df[comps_df['country_name'] == selected_country]
-competition_name = st.sidebar.selectbox("Selecciona Torneo", filtered_comps['competition_name'].unique())
+competition_name = st.sidebar.selectbox("Torneo", sorted(country_comps["competition_name"].unique()))
+comp_seasons = country_comps[country_comps["competition_name"] == competition_name].sort_values(
+    "season_name", ascending=False
+)
+season_name = st.sidebar.selectbox("Temporada", comp_seasons["season_name"].tolist())
+comp_row = comp_seasons[comp_seasons["season_name"] == season_name].iloc[0]
 
-comp_row = filtered_comps[filtered_comps['competition_name'] == competition_name].iloc[0]
-comp_id = comp_row['competition_id']
-season_id = comp_row['season_id']
+matches_df = get_matches(int(comp_row["competition_id"]), int(comp_row["season_id"]))
+matches_df = matches_df.sort_values("match_date").reset_index(drop=True)
 
-@st.cache_data
-def get_matches(c_id, s_id):
-    return sb.matches(competition_id=c_id, season_id=s_id)
-
-matches_df = get_matches(comp_id, season_id)
-
+# ---------- 2. Partido ----------
 st.sidebar.header("2. Selección de Partido")
-match_options = matches_df.apply(lambda x: f"{x['home_team']} {x['home_score']} - {x['away_score']} {x['away_team']} ({x['match_date']})", axis=1)
-selected_match_label = st.sidebar.selectbox("Selecciona el Partido", match_options)
+match_labels = {
+    int(r["match_id"]): f"{r['home_team']} {r['home_score']} - {r['away_score']} {r['away_team']} ({r['match_date']})"
+    for _, r in matches_df.iterrows()
+}
+match_id = st.sidebar.selectbox("Partido", list(match_labels.keys()), format_func=lambda k: match_labels[k])
+match_row = matches_df[matches_df["match_id"] == match_id].iloc[0]
 
-selected_match_row = matches_df[match_options == selected_match_label].iloc[0]
-match_id = selected_match_row['match_id']
-
-# Cabecera con marcador
 col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Equipo Local", selected_match_row['home_team'], selected_match_row['home_score'])
-with col2:
-    st.metric("Equipo Visitante", selected_match_row['away_team'], selected_match_row['away_score'])
-with col3:
-    st.metric("Fecha del Encuentro", str(selected_match_row['match_date']))
+col1.metric("Equipo Local", match_row["home_team"], int(match_row["home_score"]), delta_color="off")
+col2.metric("Equipo Visitante", match_row["away_team"], int(match_row["away_score"]), delta_color="off")
+col3.metric("Fecha del Encuentro", str(match_row["match_date"]))
 
-@st.cache_data
-def get_match_events(m_id):
-    return sb.events(match_id=m_id)
-
-with st.spinner("Conectando con la API y extrayendo eventos del partido..."):
+with st.spinner("Extrayendo eventos del partido..."):
     events_df = get_match_events(match_id)
 
-# --- FILTROS TÁCTICOS AVANZADOS EN BARRA LATERAL ---
-st.sidebar.header("3. Filtros Tácticos Avanzados")
-team_options = events_df['team'].dropna().unique()
-selected_team = st.sidebar.selectbox("Equipo a Analizar", team_options)
+# ---------- 3. Filtros tácticos ----------
+st.sidebar.header("3. Filtros Tácticos")
+selected_team = st.sidebar.selectbox("Equipo a analizar", events_df["team"].dropna().unique())
+team_events = events_df[events_df["team"] == selected_team]
 
-# Filtrar jugadores del equipo seleccionado
-team_events = events_df[events_df['team'] == selected_team]
-player_options = sorted(team_events['player'].dropna().unique())
-selected_players = st.sidebar.multiselect("Filtrar por Jugador(es)", player_options, default=[])
+selected_players = st.sidebar.multiselect(
+    "Jugador(es)", sorted(team_events["player"].dropna().unique()), default=[]
+)
+event_types = sorted(team_events["type"].dropna().unique())
+default_events = [e for e in ["Pass", "Carry"] if e in event_types]
+selected_events = st.sidebar.multiselect("Tipos de evento", event_types, default=default_events)
 
-event_types = sorted(team_events['type'].dropna().unique())
-selected_events = st.sidebar.multiselect("Tipos de Evento Táctico", event_types, default=['Pass', 'Carry'])
-
-# Aplicar filtros al DataFrame
-filtered_events = team_events.copy()
+filtered_events = team_events
 if selected_players:
-    filtered_events = filtered_events[filtered_events['player'].isin(selected_players)]
+    filtered_events = filtered_events[filtered_events["player"].isin(selected_players)]
 if selected_events:
-    filtered_events = filtered_events[filtered_events['type'].isin(selected_events)]
+    filtered_events = filtered_events[filtered_events["type"].isin(selected_events)]
 
 st.subheader(f"🎯 Análisis Espacial: {selected_team}")
-st.markdown(f"Se han aislado **{len(filtered_events)}** acciones que cumplen con los filtros seleccionados.")
+st.markdown(f"Se han aislado **{len(filtered_events)}** acciones que cumplen los filtros.")
 
-if len(filtered_events) > 0 and 'location' in filtered_events.columns:
-    # Selector de tipo de visualización
-    viz_mode = st.radio("Selecciona el tipo de representación táctica:", ["Mapa de Dispersión (Acciones)", "Mapa de Calor / Densidad (KDE)"], horizontal=True)
 
-    pitch = Pitch(pitch_type='statsbomb', pitch_color='grass', line_color='white', line_zorder=2)
+# ---------- Extracción de coordenadas ----------
+def extract_xy(df: pd.DataFrame) -> pd.DataFrame:
+    if "location" not in df.columns:
+        return pd.DataFrame(columns=["x", "y", "type", "player"])
+    df = df.dropna(subset=["location"])
+    valid = df["location"].apply(lambda l: isinstance(l, (list, tuple, np.ndarray)) and len(l) >= 2)
+    df = df[valid]
+    return pd.DataFrame(
+        {
+            "x": df["location"].apply(lambda l: float(l[0])),
+            "y": df["location"].apply(lambda l: float(l[1])),
+            "type": df["type"],
+            "player": df["player"],
+        }
+    )
+
+
+plot_df = extract_xy(filtered_events)
+
+if len(plot_df) > 5:
+    viz_mode = st.radio(
+        "Tipo de representación táctica:",
+        ["Mapa de Dispersión (Acciones)", "Mapa de Calor / Densidad (KDE)"],
+        horizontal=True,
+    )
+    pitch = Pitch(pitch_type="statsbomb", pitch_color="grass", line_color="white", line_zorder=2)
     fig, ax = pitch.draw(figsize=(10, 7))
 
-    # Extraer coordenadas válidas [X, Y]
-    valid_locs = filtered_events['location'].dropna()
-    x_coords = valid_locs.apply(lambda loc: loc[0] if isinstance(loc, list) and len(loc) >= 2 else None)
-    y_coords = valid_locs.apply(lambda loc: loc[1] if isinstance(loc, list) and len(loc) >= 2 else None)
-    
-    plot_df = pd.DataFrame({
-        'x': x_coords, 
-        'y': y_coords, 
-        'type': filtered_events['type'], 
-        'player': filtered_events['player']
-    }).dropna()
-
-    if len(plot_df) > 5:
-        if viz_mode == "Mapa de Dispersión (Acciones)":
-            event_colors = {'Pass': 'yellow', 'Carry': 'cyan', 'Pressure': 'orange', 'Shot': 'red', 'Ball Recovery': 'lime'}
-            for ev_type, color in event_colors.items():
-                subset = plot_df[plot_df['type'] == ev_type]
-                if not subset.empty:
-                    pitch.scatter(subset['x'], subset['y'], ax=ax, color=color, edgecolors='black', s=90, alpha=0.85, label=ev_type, zorder=3)
-            ax.legend(loc='upper right', facecolor='black', edgecolor='white', labelcolor='white')
-        else:
-            # Mapa de calor de densidad táctica (KDE)
-            try:
-                pitch.kdeplot(plot_df['x'], plot_df['y'], ax=ax, cmap='hot', levels=100, fill=True, alpha=0.65, zorder=3)
-                pitch.scatter(plot_df['x'], plot_df['y'], ax=ax, color='white', s=15, alpha=0.3, zorder=4)
-            except Exception:
-                st.warning("La densidad de puntos es muy baja para este filtro. Mostrando dispersión alternativa.")
-                pitch.scatter(plot_df['x'], plot_df['y'], ax=ax, color='yellow', s=70, alpha=0.8, zorder=3)
+    if viz_mode.startswith("Mapa de Dispersión"):
+        colors = {"Pass": "yellow", "Carry": "cyan", "Pressure": "orange", "Shot": "red", "Ball Recovery": "lime"}
+        for ev_type in plot_df["type"].unique():
+            subset = plot_df[plot_df["type"] == ev_type]
+            pitch.scatter(
+                subset["x"], subset["y"], ax=ax, color=colors.get(ev_type, "white"),
+                edgecolors="black", s=90, alpha=0.85, label=ev_type, zorder=3,
+            )
+        ax.legend(loc="upper right", facecolor="black", edgecolor="white", labelcolor="white")
     else:
-        st.info("No hay suficientes coordenadas espaciales registradas para este filtro.")
+        try:
+            pitch.kdeplot(plot_df["x"], plot_df["y"], ax=ax, cmap="hot", levels=50, thresh=0.05,
+                          fill=True, alpha=0.65, zorder=3)
+            pitch.scatter(plot_df["x"], plot_df["y"], ax=ax, color="white", s=15, alpha=0.3, zorder=4)
+        except Exception:
+            st.warning("Densidad insuficiente para el KDE con este filtro. Mostrando dispersión.")
+            pitch.scatter(plot_df["x"], plot_df["y"], ax=ax, color="yellow", s=70, alpha=0.8, zorder=3)
 
     st.pyplot(fig)
+    plt.close(fig)
 else:
-    st.info("No hay coordenadas espaciales disponibles en la API para esta combinación de filtros.")
+    st.info("No hay suficientes coordenadas espaciales para esta combinación de filtros.")
 
-# Tabla interactiva inferior con los datos filtrados
-with st.expander("📊 Inspeccionar registros en bruto del DataFrame"):
-    st.dataframe(filtered_events[['minute', 'second', 'type', 'player', 'position', 'location']].head(200), use_container_width=True)
+with st.expander("📊 Inspeccionar registros en bruto"):
+    cols = [c for c in ["minute", "second", "type", "player", "position", "location"] if c in filtered_events.columns]
+    st.dataframe(filtered_events[cols].head(200), width="stretch")
