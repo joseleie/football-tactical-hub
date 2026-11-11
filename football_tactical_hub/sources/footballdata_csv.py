@@ -1,5 +1,7 @@
 """football-data.co.uk: CSV gratuitos (sin clave) con resultados, tiros, córners y tarjetas de muchas ligas."""
+import datetime
 import io
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import requests
@@ -67,3 +69,26 @@ def parse(raw: pd.DataFrame, div: str, season: str) -> pd.DataFrame:
 def load(div: str, season: str) -> pd.DataFrame:
     url = BASE.format(code=_code(season), div=div)
     return parse(_read(url), div, season)
+
+
+def current_season(today=None) -> str:
+    """Temporada en curso (empieza en julio): en noviembre de 2026 -> 2026/2027."""
+    t = today or datetime.date.today()
+    return season_label(t.year if t.month >= 7 else t.year - 1)
+
+
+def load_current(divs, season=None):
+    """Carga en paralelo la temporada en curso de varias ligas. Devuelve (DataFrame, lista de errores)."""
+    season = season or current_season()
+
+    def one(d):
+        try:
+            return load(d, season), None
+        except Exception as e:
+            return None, f"{LEAGUES.get(d, (d,))[0]}: {type(e).__name__}"
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        res = list(ex.map(one, divs))
+    frames = [r[0] for r in res if r[0] is not None and len(r[0])]
+    errors = [r[1] for r in res if r[1]]
+    return (pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()), errors
