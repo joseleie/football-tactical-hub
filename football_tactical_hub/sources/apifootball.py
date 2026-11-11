@@ -9,6 +9,21 @@ from sources.schema import finalize, season_label
 
 BASE = "https://v3.football.api-sports.io"
 FINISHED = {"FT", "AET", "PEN"}
+FREE_YEARS = {2022, 2023, 2024}  # temporadas accesibles con el plan gratuito
+
+
+def plan() -> str:
+    """'free' por defecto. Con un plan de pago, define API_FOOTBALL_PLAN = "pro" en Secrets."""
+    try:
+        val = st.secrets.get("API_FOOTBALL_PLAN")
+    except Exception:
+        val = None
+    return str(val or os.environ.get("API_FOOTBALL_PLAN") or "free").lower()
+
+
+def usable_years(years) -> list:
+    ys = sorted({int(y) for y in years}, reverse=True)
+    return ys if plan() != "free" else [y for y in ys if y in FREE_YEARS]
 
 
 def get_token() -> str | None:
