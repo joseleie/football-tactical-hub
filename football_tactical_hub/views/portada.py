@@ -1,11 +1,25 @@
 import pandas as pd
 import streamlit as st
 
-from core import get_competitions, load_scope, team_matches, teams_of
+from core import get_competitions, standings, teams_of
 from normalize import norm_key
+from sources import apifootball, footballdata_csv as fdc, footballdata_org
 
 matches = st.session_state["matches"]
 all_matches = st.session_state["matches_all"]
+
+# ---------- Temporada en curso (se carga sola, sin clave) ----------
+MAIN_DIVS = ["SP1", "E0", "I1", "D1", "F1", "P1"]
+season_now = fdc.current_season()
+if "current_df" not in st.session_state:
+    with st.spinner(f"Cargando la temporada {season_now} (football-data.co.uk)…"):
+        st.session_state["current_df"], st.session_state["current_err"] = fdc.load_current(MAIN_DIVS, season_now)
+cur = st.session_state["current_df"]
+if len(cur) and not st.session_state.get("current_added"):
+    base = st.session_state.get("extra_matches")
+    new = pd.concat([base, cur], ignore_index=True) if base is not None else cur
+    st.session_state["extra_matches"] = new.drop_duplicates(subset=["source", "competition", "season", "match_id"], keep="last")
+    st.session_state["current_added"] = True
 extra = st.session_state.get("extra_matches")
 
 # ---------- Hero ----------
@@ -14,6 +28,8 @@ st.markdown(
     "**Un único sitio para explorar equipos, jugadores y competiciones de varias fuentes de datos de fútbol**, "
     "con nombres normalizados para poder cruzarlas."
 )
+newest = max([all_matches["match_date"].max()] + ([cur["match_date"].max()] if len(cur) else []))
+st.caption(f"📅 Datos hasta el {newest} · temporada en curso: {season_now}")
 
 # ---------- Buscador global ----------
 q = st.text_input("🔎 Busca un equipo", placeholder="Ej.: Barcelona, Croatia, Arsenal, Lyon…", key="home_search")
@@ -46,7 +62,36 @@ k[0].metric("Competiciones", comps_cat["competition_name"].nunique())
 k[1].metric("Temporadas (competición×año)", len(comps_cat.drop_duplicates(["competition_id", "season_id"])))
 k[2].metric("Partidos con eventos", f"{len(all_matches):,}")
 k[3].metric("Equipos", f"{len(teams_of(all_matches)):,}")
-k[4].metric("Partidos de otras fuentes", "—" if extra is None else f"{len(extra):,}")
+k[4].metric(f"Partidos {season_now}", f"{len(cur):,}" if len(cur) else "—")
+
+# ---------- Actualidad ----------
+st.subheader(f"🔥 Actualidad · temporada {season_now}")
+if cur.empty:
+    st.info("No se pudo cargar la temporada en curso (el sitio no respondió). Puedes cargarla a mano en «Fuentes de datos → football-data.co.uk».")
+else:
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Partidos jugados", f"{len(cur):,}")
+    a2.metric("Goles", int(cur["home_score"].sum() + cur["away_score"].sum()))
+    a3.metric("Último partido", cur["match_date"].max())
+    tabs_now = st.tabs(sorted(cur["competition"].unique()))
+    for tab, lg in zip(tabs_now, sorted(cur["competition"].unique())):
+        with tab:
+            sub = cur[cur["competition"] == lg]
+            l, r = st.columns([3, 2])
+            l.dataframe(standings(sub), hide_index=True, width="stretch", height=360)
+            last_ = sub.sort_values("match_date", ascending=False).head(10)
+            r.dataframe(
+                last_.assign(Marcador=last_["home_score"].astype("Int64").astype(str) + " - " + last_["away_score"].astype("Int64").astype(str))
+                [["match_date", "home_team", "Marcador", "away_team"]]
+                .rename(columns={"match_date": "Fecha", "home_team": "Local", "away_team": "Visitante"}),
+                hide_index=True, width="stretch", height=360,
+            )
+if st.session_state.get("current_err"):
+    st.caption("Sin datos de: " + ", ".join(st.session_state["current_err"]))
+st.caption(
+    f"Fuente de la temporada en curso: football-data.co.uk (puede ir con algunos días de retraso). "
+    f"StatsBomb Open Data llega hasta el {all_matches['match_date'].max()}; no publica partidos más recientes."
+)
 
 # ---------- Accesos ----------
 st.subheader("Explora")
@@ -67,12 +112,13 @@ for col, (title, text, page) in zip(c, cards):
 # ---------- Últimos partidos y competiciones ----------
 left, right = st.columns([3, 2])
 with left:
-    st.subheader("🕒 Últimos partidos del catálogo")
-    last = matches.sort_values("match_date", ascending=False).head(12)
+    st.subheader("🕒 Últimos partidos (todas las fuentes cargadas)")
+    pool_recent = pd.concat([matches, extra], ignore_index=True) if extra is not None and len(extra) else matches
+    last = pool_recent.sort_values("match_date", ascending=False).head(12)
     st.dataframe(
         last.assign(Marcador=last["home_score"].astype("Int64").astype(str) + " - " + last["away_score"].astype("Int64").astype(str))
-        [["match_date", "competition", "season", "home_team", "Marcador", "away_team"]]
-        .rename(columns={"match_date": "Fecha", "competition": "Competición", "season": "Temporada", "home_team": "Local", "away_team": "Visitante"}),
+        [["match_date", "source", "competition", "season", "home_team", "Marcador", "away_team"]]
+        .rename(columns={"match_date": "Fecha", "source": "Fuente", "competition": "Competición", "season": "Temporada", "home_team": "Local", "away_team": "Visitante"}),
         hide_index=True, width="stretch",
     )
 with right:
