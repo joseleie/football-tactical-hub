@@ -189,13 +189,18 @@ with tabs[3]:
         if leagues is not None and not leagues.empty:
             lab = {int(r.id): f"{r.liga} · {r.país} ({r.tipo})" for r in leagues.itertuples()}
             lid = st.selectbox("Liga", list(lab.keys()), format_func=lambda k: lab[k], key="af_league")
-            years = sorted(leagues[leagues["id"] == lid]["temporadas"].iloc[0], reverse=True)
-            year = st.selectbox("Temporada (año de inicio)", years, key="af_year")
-            if st.button("Cargar API-Football", type="primary", key="af_load"):
-                try:
-                    st.session_state["af_df"] = apifootball.load(lid, str(year), token)
-                except Exception as e:
-                    st.error(f"Error de la API (puede ser el plan gratuito, que limita temporadas): {e}")
+            years = apifootball.usable_years(leagues[leagues["id"] == lid]["temporadas"].iloc[0])
+            if apifootball.plan() == "free":
+                st.caption("Plan gratuito: solo temporadas 2022 a 2024. Si tienes un plan de pago, añade `API_FOOTBALL_PLAN = \"pro\"` en Secrets.")
+            if not years:
+                st.info("Esta liga no tiene temporadas disponibles en tu plan.")
+            else:
+                year = st.selectbox("Temporada (año de inicio)", years, key="af_year")
+                if st.button("Cargar API-Football", type="primary", key="af_load"):
+                    try:
+                        st.session_state["af_df"] = apifootball.load(lid, str(year), token)
+                    except Exception as e:
+                        st.error(f"Error de la API: {e}")
         af = st.session_state.get("af_df")
         if af is not None:
             show_unified(af, "apifootball")
