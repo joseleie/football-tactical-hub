@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from core import (
-    MAP_MODES, draw_pitch_map, extract_xy, form_string, player_match_stats, player_summary, scope_selector,
+    dedupe_matches, MAP_MODES, draw_pitch_map, extract_xy, form_string, player_match_stats, player_summary, scope_selector,
     select_team, team_counts, team_match_stats, team_matches, team_matches_by_key, teams_of,
 )
 from normalize import norm_key
@@ -11,7 +11,6 @@ matches = st.session_state["matches"]
 all_matches = st.session_state["matches_all"]
 extra = st.session_state.get("extra_matches")
 ICON = {"V": "🟢 V", "E": "🟡 E", "D": "🔴 D"}
-PRIORITY = {"StatsBomb": 0, "Understat": 1, "football-data.org": 2, "API-Football": 3, "football-data.co.uk": 4}
 
 st.title("🛡️ Página de equipo")
 
@@ -48,12 +47,11 @@ with tab_h:
         if len(tm_ex):
             hist = pd.concat([tm_all, tm_ex], ignore_index=True)
             hist["_k"] = hist["rival"].map(norm_key)
-            hist["_p"] = hist["source"].map(PRIORITY).fillna(9)
             before = len(hist)
-            hist = hist.sort_values(["match_date", "_p"]).drop_duplicates(["match_date", "_k", "condicion"], keep="first").drop(columns=["_k", "_p"])
+            hist = dedupe_matches(hist, ["_k", "condicion"]).drop(columns=["_k"])  # tolera ±1 día entre fuentes
             st.caption(
                 f"Incluye partidos de otras fuentes cargadas en «Fuentes de datos», cruzados por nombre normalizado. "
-                f"Se descartaron {before - len(hist)} duplicados (mismo día, rival y condición; prioridad StatsBomb > Understat > football-data.org > API-Football > football-data.co.uk)."
+                f"Se descartaron {before - len(hist)} duplicados (mismo rival y condición con ±1 día de diferencia; prioridad StatsBomb > Understat > football-data.org > API-Football > football-data.co.uk)."
             )
     c = st.columns(6)
     c[0].metric("Partidos", len(hist))

@@ -383,3 +383,64 @@ def team_matches_by_key(df: pd.DataFrame, key: str) -> pd.DataFrame:
 
 def team_counts(matches: pd.DataFrame) -> dict:
     return pd.concat([matches["home_team"], matches["away_team"]]).value_counts().to_dict()
+
+
+# ---------------------------------------------------------------------
+# Cruce de fuentes: duplicados tolerantes a husos horarios y comparación de equipos
+# ---------------------------------------------------------------------
+SOURCE_PRIORITY = {"StatsBomb": 0, "Understat": 1, "football-data.org": 2, "API-Football": 3, "football-data.co.uk": 4}
+
+
+def dedupe_matches(df: pd.DataFrame, key_cols: list, tol_days: int = 1) -> pd.DataFrame:
+    """Quita el mismo partido repetido en fuentes distintas: misma clave (equipos, condición...) y fecha con ±tol_days
+    de diferencia (husos horarios). Se queda con la fuente de mayor prioridad. Dos filas de la MISMA fuente nunca se
+    consideran duplicadas."""
+    if df.empty:
+        return df
+    d = df.copy()
+    d["_p"] = d["source"].map(SOURCE_PRIORITY).fillna(9)
+    d["_d"] = pd.to_datetime(d["match_date"], errors="coerce")
+    d = d.sort_values(["_p", "_d"])
+    seen: dict = {}
+    keep = []
+    tol = pd.Timedelta(days=tol_days)
+    for idx, *key, date, src in zip(d.index, *[d[c] for c in key_cols], d["_d"], d["source"]):
+        key = tuple(key)
+        clash = any(s != src and pd.notna(date) and pd.notna(dt) and abs(date - dt) <= tol for dt, s in seen.get(key, []))
+        if not clash:
+            keep.append(idx)
+        seen.setdefault(key, []).append((date, src))
+    return df.loc[sorted(keep)].reset_index(drop=True)
+
+
+def combined_pool(matches_all: pd.DataFrame, extra: pd.DataFrame | None) -> pd.DataFrame:
+    """StatsBomb + las demás fuentes en un único conjunto de partidos, sin duplicados."""
+    parts = [matches_all] + ([extra] if extra is not None and len(extra) else [])
+    pool = pd.concat(parts, ignore_index=True)
+    pool = pool.dropna(subset=["home_score", "away_score", "home_key", "away_key"])
+    return dedupe_matches(pool, ["home_key", "away_key"])
+
+
+def team_directory(pool: pd.DataFrame) -> pd.DataFrame:
+    """clave normalizada -> nombre más habitual y nº de partidos. Une las variantes de nombre entre fuentes."""
+    names = pd.concat([pool[["home_key", "home_team"]].set_axis(["key", "name"], axis=1),
+                       pool[["away_key", "away_team"]].set_axis(["key", "name"], axis=1)])
+    out = names.groupby("key").agg(name=("name", lambda s: s.value_counts().index[0]), partidos=("name", "size")).reset_index()
+    return out.sort_values("name").reset_index(drop=True)
+
+
+def history_by_key(pool: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Partidos de un equipo (por clave normalizada) desde su propia perspectiva."""
+    home, away = pool[pool["home_key"] == key], pool[pool["away_key"] == key]
+
+    def side(df, is_home):
+        gf, gc = (df["home_score"], df["away_score"]) if is_home else (df["away_score"], df["home_score"])
+        return pd.DataFrame({
+            "match_date": df["match_date"], "source": df["source"], "competition": df["competition"], "season": df["season"],
+            "rival": df["away_team"] if is_home else df["home_team"], "rival_key": df["away_key"] if is_home else df["home_key"],
+            "condicion": "Local" if is_home else "Visitante", "gf": gf.astype(int), "gc": gc.astype(int)})
+
+    h = pd.concat([side(home, True), side(away, False)], ignore_index=True)
+    h["resultado"] = np.select([h["gf"] > h["gc"], h["gf"] == h["gc"]], ["V", "E"], "D")
+    h["puntos"] = h["resultado"].map({"V": 3, "E": 1, "D": 0})
+    return h.sort_values("match_date").reset_index(drop=True)

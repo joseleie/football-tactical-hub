@@ -1,5 +1,6 @@
 import streamlit as st
 
+import warehouse
 from core import get_all_matches
 
 st.set_page_config(page_title="Football Tactical Data Hub", page_icon="⚽", layout="wide")
@@ -7,7 +8,12 @@ st.set_page_config(page_title="Football Tactical Data Hub", page_icon="⚽", lay
 # ---------- Catálogo completo de StatsBomb + filtros globales (por defecto: TODO) ----------
 all_matches = get_all_matches()
 st.session_state["matches_all"] = all_matches
-st.session_state.setdefault("extra_matches", None)  # partidos de otras fuentes cargados en "Fuentes"
+st.session_state.setdefault("extra_matches", None)  # partidos de otras fuentes (almacén + lo cargado en "Fuentes")
+if st.session_state["extra_matches"] is None and not st.session_state.get("wh_checked"):
+    st.session_state["wh_checked"] = True
+    _wh = warehouse.load_matches()  # lectura local del parquet: instantánea y sin depender de ninguna web
+    if _wh is not None and len(_wh):
+        st.session_state["extra_matches"] = _wh
 
 st.sidebar.header("🔎 Filtros del catálogo")
 gender = st.sidebar.radio("Género", ["Todos", "Masculino", "Femenino"], horizontal=True, key="f_gender")
@@ -34,7 +40,9 @@ pages = [
     st.Page("views/competiciones.py", title="Competiciones", icon="🏆"),
     st.Page("views/equipo.py", title="Equipo", icon="🛡️"),
     st.Page("views/jugador.py", title="Jugador", icon="👤"),
+    st.Page("views/comparador.py", title="Comparador de equipos", icon="⚔️"),
     st.Page("views/partido.py", title="Análisis de partido", icon="🎯"),
+    st.Page("views/video.py", title="Vídeo (seguimiento)", icon="🎥"),
     st.Page("views/fuentes.py", title="Fuentes de datos", icon="🔌"),
 ]
 st.navigation(pages).run()

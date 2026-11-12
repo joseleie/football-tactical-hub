@@ -21,6 +21,10 @@ if len(cur) and not st.session_state.get("current_added"):
     st.session_state["extra_matches"] = new.drop_duplicates(subset=["source", "competition", "season", "match_id"], keep="last")
     st.session_state["current_added"] = True
 extra = st.session_state.get("extra_matches")
+from_warehouse = False
+if cur.empty and extra is not None and len(extra):  # sin conexión con football-data.co.uk: datos del almacén
+    cur = extra[extra["season"] == season_now].copy()
+    from_warehouse = len(cur) > 0
 
 # ---------- Hero ----------
 st.markdown("# ⚽ Football Tactical Data Hub")
@@ -88,6 +92,9 @@ else:
             )
 if st.session_state.get("current_err"):
     st.caption("Sin datos de: " + ", ".join(st.session_state["current_err"]))
+if from_warehouse:
+    from warehouse import read_meta
+    st.caption(f"Mostrando datos del almacén (última ingesta: {read_meta().get('updated_utc', 'desconocida')}) porque la descarga en vivo no respondió.")
 st.caption(
     f"Fuente de la temporada en curso: football-data.co.uk (puede ir con algunos días de retraso). "
     f"StatsBomb Open Data llega hasta el {all_matches['match_date'].max()}; no publica partidos más recientes."
@@ -95,12 +102,13 @@ st.caption(
 
 # ---------- Accesos ----------
 st.subheader("Explora")
-c = st.columns(5)
+c = st.columns(6)
 cards = [
     ("🏆 Competiciones", "Clasificaciones y todos los partidos de cada torneo y temporada.", "views/competiciones.py"),
     ("🛡️ Equipos", "Historial completo, agregados, plantilla y mapas.", "views/equipo.py"),
     ("👤 Jugadores", "Partidos jugados y comparativa por 90 minutos.", "views/jugador.py"),
     ("🎯 Partidos", "Mapas tácticos de un partido concreto.", "views/partido.py"),
+    ("⚔️ Comparador", "Dos equipos frente a frente, con su historial directo.", "views/comparador.py"),
     ("🔌 Fuentes", "Understat, football-data y más, normalizadas.", "views/fuentes.py"),
 ]
 for col, (title, text, page) in zip(c, cards):
@@ -123,8 +131,14 @@ with left:
     )
 with right:
     st.subheader("📚 Competiciones con más partidos")
-    top = matches.groupby("competition").size().sort_values(ascending=False).head(10)
-    st.bar_chart(top, horizontal=True, height=330)
+    import altair as alt
+
+    top = matches.groupby("competition").size().sort_values(ascending=False).head(10).rename("partidos").reset_index()
+    st.altair_chart(
+        alt.Chart(top).mark_bar().encode(x=alt.X("partidos:Q", title="Partidos"), y=alt.Y("competition:N", sort="-x", title=None),
+                                         tooltip=["competition", "partidos"]).properties(height=330),
+        width="stretch",
+    )
 
 # ---------- Estado de fuentes ----------
 st.subheader("🔌 Fuentes conectadas")

@@ -50,7 +50,7 @@ def show_unified(df: pd.DataFrame, key: str):
     st.download_button("⬇️ Descargar CSV normalizado", df.to_csv(index=False).encode("utf-8"), file_name=f"{key}_normalizado.csv", mime="text/csv", key=f"{key}_dl")
 
 
-tabs = st.tabs(["Understat", "football-data.co.uk", "football-data.org", "API-Football", "🔗 Normalización", "⛔ No integradas"])
+tabs = st.tabs(["Understat", "football-data.co.uk", "football-data.org", "API-Football", "🔗 Normalización", "⛔ No integradas", "💾 Almacén"])
 
 # =====================================================================
 with tabs[0]:
@@ -258,3 +258,40 @@ with tabs[5]:
         columns=["Fuente", "Por qué no", "Alternativa conectada"],
     )
     st.dataframe(notint, hide_index=True, width="stretch")
+
+# =====================================================================
+with tabs[6]:
+    import warehouse
+
+    st.markdown(
+        "El **almacén** es un archivo Parquet del repositorio (`data/warehouse/matches.parquet`) que se actualiza cada noche "
+        "con una acción de GitHub (`.github/workflows/ingest.yml`). La app lo lee al abrirse, sin llamar a ninguna web."
+    )
+    wh = warehouse.load_matches()
+    if wh is None or wh.empty:
+        st.info("Todavía no hay datos en el almacén. Lanza la acción «Ingesta de datos» desde la pestaña Actions de GitHub "
+                "(Run workflow) o ejecuta `python scripts/ingest.py` en local.")
+    else:
+        meta = warehouse.read_meta()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Partidos en el almacén", f"{len(wh):,}")
+        c2.metric("Competiciones", wh["competition"].nunique())
+        c3.metric("Última ingesta (UTC)", meta.get("updated_utc", "—")[:16].replace("T", " "))
+        cov = warehouse.coverage(wh)
+        cov.columns = ["Fuente", "Competición", "Temporada", "Partidos", "Último partido"]
+        st.dataframe(cov, hide_index=True, width="stretch", height=360)
+        if meta.get("errors"):
+            with st.expander(f"Combinaciones sin datos en la última ingesta ({len(meta['errors'])})"):
+                st.write(meta["errors"])
+        st.markdown("#### 🧪 Calidad del cruce entre fuentes")
+        dup = warehouse.duplicates(wh)
+        unm = warehouse.unmatched_teams(wh)
+        q1, q2 = st.columns(2)
+        q1.metric("Partidos presentes en 2 o más fuentes", f"{len(dup):,}")
+        q2.metric("Equipos sin equivalencia entre fuentes", f"{len(unm):,}")
+        if len(unm):
+            st.dataframe(unm, hide_index=True, width="stretch")
+            st.caption("Cada fila es un equipo que una fuente escribe de forma distinta a la de referencia. Añádelo a `data/team_aliases.csv` (alias → nombre canónico).")
+        elif len(dup) == 0:
+            st.caption("Todavía hay una sola fuente en el almacén o no coinciden competiciones entre fuentes.")
+    st.caption("Alias de equipos editables a mano en `data/team_aliases.csv` (columnas: alias, canonical).")

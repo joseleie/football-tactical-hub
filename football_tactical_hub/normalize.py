@@ -6,7 +6,8 @@ import unicodedata
 import pandas as pd
 
 # Palabras sin valor identificativo que se eliminan al comparar
-STOP = {"fc", "cf", "ac", "afc", "sc", "sv", "vfb", "vfl", "tsg", "fsv", "cd", "ud", "rc", "rcd", "ssc", "us", "as", "the", "de", "club"}
+STOP = {"fc", "cf", "ac", "afc", "sc", "sv", "vfb", "vfl", "tsg", "fsv", "cd", "ud", "rc", "rcd", "ssc", "us", "as", "the", "de", "club",
+        "balompie", "futbol", "football", "calcio", "sad"}  # decoraciones del nombre oficial, sin valor identificativo
 
 # Alias frecuentes entre proveedores (clave normalizada -> forma canónica normalizada)
 ALIASES = {
@@ -50,16 +51,21 @@ def _basic(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _canon(value: str) -> str:
+    """Quita las palabras sin valor identificativo (FC, Club...) de una forma ya normalizada."""
+    tokens = [t for t in value.split() if t not in STOP]
+    return " ".join(tokens) if tokens else value
+
+
 def norm_key(name) -> str:
     """Clave canónica de un equipo: sin tildes, sin signos, sin prefijos tipo FC/CF y con alias resueltos."""
     if name is None or (isinstance(name, float) and pd.isna(name)):
         return ""
     base = _basic(name)
     if base in ALIASES:
-        return ALIASES[base]
-    tokens = [t for t in base.split() if t not in STOP]
-    key = " ".join(tokens) if tokens else base
-    return ALIASES.get(key, key)
+        return _canon(ALIASES[base])
+    key = _canon(base)
+    return _canon(ALIASES.get(key, key))
 
 
 def similarity(a: str, b: str) -> float:
@@ -119,3 +125,55 @@ def match_player(name: str, candidates, cutoff: float = 0.8):
         if s > best_s:
             best, best_s = c, s
     return best if best_s >= cutoff else None
+
+
+def _load_user_aliases() -> None:
+    """Alias propios (data/team_aliases.csv, columnas: alias,canonical). Permiten corregir a mano equipos sin equivalencia."""
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).parent / "data" / "team_aliases.csv"
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            alias, canonical = (row.get("alias") or "").strip(), (row.get("canonical") or "").strip()
+            if alias and canonical:
+                ALIASES[_basic(alias)] = norm_key(canonical)
+
+
+_load_user_aliases()
+
+
+PLAYER_ALIASES: dict[str, str] = {}
+
+
+def _load_player_aliases() -> None:
+    """Alias de jugadores (data/player_aliases.csv, columnas: alias,canonical), p. ej. 'Pedri' -> 'Pedro González López'."""
+    import csv
+    from pathlib import Path
+
+    path = Path(__file__).parent / "data" / "player_aliases.csv"
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            a, c = (row.get("alias") or "").strip(), (row.get("canonical") or "").strip()
+            if a and c:
+                PLAYER_ALIASES[_basic(a)] = _basic(c)
+
+
+_load_player_aliases()
+_match_player_base = match_player
+
+
+def match_player(name: str, candidates, cutoff: float = 0.8):  # noqa: F811
+    """Como antes, pero primero resuelve los alias de jugador propios."""
+    key = player_key(name)
+    if key in PLAYER_ALIASES:
+        target = PLAYER_ALIASES[key]
+        for c in candidates:
+            if player_key(c) == target:
+                return c
+        name = target
+    return _match_player_base(name, candidates, cutoff)
