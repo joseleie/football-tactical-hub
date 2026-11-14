@@ -32,6 +32,11 @@
 
 ---
 
+- [x] **Estudio de Metrica Sports** y mapa de qué replicar con código abierto: `docs/ESTUDIO_METRICA.md`.
+- [x] **Datos reales de Metrica** integrados en la página «Vídeo» (adaptador `metrica_data.py`), usados para validar con datos reales las métricas físicas y la sincronización vídeo-eventos.
+- [x] **Análisis táctico sobre seguimiento**: control del espacio (Voronoi), altura de línea defensiva y compacidad, y fases de posesión.
+- [x] **Medición de recursos**: `scripts/benchmark.py` y `docs/RECURSOS.md` en el analizador de vídeo.
+
 ## Fase 3 · Módulo de vídeo (`football-vision-analyzer`)
 **Objetivo:** subir un vídeo de un partido (cámara táctica/cenital), detectar jugadores, balón y árbitros, seguirlos con un ID persistente, clasificar el equipo por el color de la camiseta y proyectar las posiciones sobre un plano 2D del campo (homografía).
 
@@ -64,6 +69,16 @@ Un archivo por partido procesado, con una fila por jugador y fotograma:
 - [x] **V3 · Frontend**: `VideoUploader.jsx` y `TacticalCanvas.jsx` (reproductor con superposición de cajas, IDs y minimapa).
 - [x] **V4 · Integración con el hub**: página «Vídeo» con mapas de calor, posiciones, rendimiento, forma y posesión, y pestaña «Eventos StatsBomb» que busca el desfase vídeo-eventos y los superpone. Pendiente: validarlo con vídeo real.
 - [ ] **V5 · Producción**: alojamiento con GPU, limpieza de archivos temporales, registros y monitorización.
+
+
+### Siguientes hitos del módulo de vídeo (derivados del estudio)
+- [ ] **V0 real**: ejecutar `scripts.v0_spike` y `scripts.benchmark --model` con un clip de cámara táctica y pesos reales; guardar `quality.json` y `recursos.json`.
+- [ ] **V6 · Evaluación objetiva** con *SoccerTrack v2* (cámara panorámica fija con verdad terreno): medir la calidad de identidades en 45 min, no solo en clips.
+- [ ] **V7 · Calibración automática del campo** con puntos clave (modelo entrenado), para no depender de clics manuales.
+- [ ] **V8 · Mejor clasificación de equipos** con embeddings (SigLIP + UMAP + K-Means) frente al color LAB actual.
+- [x] **V9 · Corrección de IDs**: cosido automático de trayectorias (en el hub y como paso opcional del pipeline del analizador) e interfaz para unir, dividir, reetiquetar y eliminar, con deshacer. Validado con movimiento real de Metrica en un caso favorable; falta medirlo con detecciones reales.
+- [ ] **V10 · Detección en panorámicas 4K** por mosaicos (los jugadores son pequeños).
+- [ ] Dorsales y reidentificación (reto abierto).
 
 ### Riesgos y decisiones abiertas
 - **Legal:** descargar vídeos de YouTube con `yt-dlp` suele ir contra los términos de servicio de YouTube salvo que tengas permiso del titular. La vía por defecto será **subir un archivo con derechos de uso**; la descarga por URL quedará como función opcional, desactivada por defecto y solo para contenido propio o con licencia.

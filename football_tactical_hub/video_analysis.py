@@ -27,7 +27,7 @@ def validate_tracks(df: pd.DataFrame) -> pd.DataFrame:
     return out[inside].sort_values(["track_id", "t_seconds"]).reset_index(drop=True)
 
 
-def player_metrics(df: pd.DataFrame, max_speed_ms: float = 12.5, smooth: int = 3, sprint_kmh: float = 24.0,
+def player_metrics(df: pd.DataFrame, max_speed_ms: float = 11.0, smooth: int = 3, sprint_kmh: float = 24.0,
                    max_gap_s: float = 1.0) -> pd.DataFrame:
     """Distancia, velocidad media/máxima y tiempo en sprint por jugador (portero incluido).
 
@@ -111,7 +111,7 @@ def team_shape(df: pd.DataFrame, team: int, t_start: float | None = None, t_end:
 
 def possession_proxy(df: pd.DataFrame, radius_m: float = 3.0) -> dict:
     """Posesión aproximada: en cada fotograma con balón, gana el equipo del jugador más cercano si está a <= radius_m."""
-    ball = df[df["role"] == ROLE_BALL].set_index("frame")[["x_pitch", "y_pitch"]]
+    ball = df[df["role"] == ROLE_BALL].drop_duplicates("frame").set_index("frame")[["x_pitch", "y_pitch"]]
     players = df[df["role"].isin([ROLE_PLAYER, ROLE_GK]) & (df["team"] >= 0)]
     counts = {0: 0, 1: 0, "libre": 0}
     for frame, g in players.groupby("frame"):
@@ -197,9 +197,9 @@ def events_video_time(ev: pd.DataFrame, offset_p1: float, offset_p2: float | Non
     return e.dropna(subset=["t_video"])
 
 
-def _team_positions(tracks: pd.DataFrame, team: int):
+def _team_positions(tracks: pd.DataFrame, team: int, roles=(ROLE_PLAYER, ROLE_GK)):
     """Tensor (T, P, 2) con la posición de cada jugador del equipo en cada instante (NaN si no hay dato)."""
-    g = tracks[(tracks["team"] == team) & tracks["role"].isin([ROLE_PLAYER, ROLE_GK])]
+    g = tracks[(tracks["team"] == team) & tracks["role"].isin(list(roles))]
     times = np.sort(g["t_seconds"].unique())
     ids = np.sort(g["track_id"].unique())
     pos = np.full((len(times), len(ids), 2), np.nan)
@@ -239,13 +239,139 @@ def sync_score(times, pos, t_game, px, py, offset: float, max_gap_s: float = 1.0
     return float(np.median(nearest)) if len(nearest) >= min_events else float("inf")
 
 
-def best_offset(tracks: pd.DataFrame, team: int, events: pd.DataFrame, attacks_right: bool, period: int = 1,
-                search: tuple[float, float] = (-600.0, 600.0), step: float = 1.0) -> tuple[float, float, pd.Series]:
-    """Busca el desfase vídeo-eventos que minimiza `sync_score`. Devuelve (offset, puntuación, curva completa)."""
+def best_offset_xy(tracks: pd.DataFrame, team: int, t_game, px, py, search: tuple[float, float] = (-600.0, 600.0),
+                   step: float = 1.0) -> tuple[float, float, pd.Series]:
+    """Busca el desfase vídeo-eventos con eventos ya en metros (t_game en segundos de partido). Sirve para cualquier
+    proveedor de eventos. Devuelve (offset, puntuación = mediana de distancia en m, curva completa)."""
     times, pos = _team_positions(tracks, team)
-    t_game, px, py = _event_arrays(events, attacks_right, period)
+    t_game, px, py = np.asarray(t_game, float), np.asarray(px, float), np.asarray(py, float)
     offsets = np.arange(search[0], search[1] + step, step)
     scores = np.array([sync_score(times, pos, t_game, px, py, o) for o in offsets])
     curve = pd.Series(scores, index=offsets)
-    best = float(offsets[int(np.argmin(scores))]) if np.isfinite(scores).any() else float("nan")
-    return best, float(np.nanmin(np.where(np.isfinite(scores), scores, np.nan))) if np.isfinite(scores).any() else float("inf"), curve
+    if not np.isfinite(scores).any():
+        return float("nan"), float("inf"), curve
+    i = int(np.argmin(scores))
+    return float(offsets[i]), float(scores[i]), curve
+
+
+def best_offset(tracks: pd.DataFrame, team: int, events: pd.DataFrame, attacks_right: bool, period: int = 1,
+                search: tuple[float, float] = (-600.0, 600.0), step: float = 1.0) -> tuple[float, float, pd.Series]:
+    """Como `best_offset_xy`, con eventos de StatsBomb (coordenadas 120 x 80 y minuto/segundo)."""
+    t_game, px, py = _event_arrays(events, attacks_right, period)
+    return best_offset_xy(tracks, team, t_game, px, py, search, step)
+
+
+# =====================================================================
+# Análisis táctico sobre el seguimiento (control del espacio, líneas, fases de juego)
+# =====================================================================
+def _nearest_time(df: pd.DataFrame, t: float) -> float:
+    times = df["t_seconds"].to_numpy()
+    return float(times[np.abs(times - t).argmin()])
+
+
+def space_control(df: pd.DataFrame, t: float, include_gk: bool = True, res: float = 1.0):
+    """Control del espacio por Voronoi: cada punto del campo pertenece al equipo del jugador más cercano.
+    Devuelve (cuota equipo 0, cuota equipo 1, matriz de propietarios con 0/1) en una rejilla de `res` metros."""
+    now = _nearest_time(df, t)
+    roles = [ROLE_PLAYER, ROLE_GK] if include_gk else [ROLE_PLAYER]
+    g = df[((df["t_seconds"] - now).abs() < 1e-6) & df["role"].isin(roles) & (df["team"] >= 0)]
+    xs, ys = np.arange(res / 2, PITCH_L, res), np.arange(res / 2, PITCH_W, res)
+    gx, gy = np.meshgrid(xs, ys)
+    if g["team"].nunique() < 2:
+        return float("nan"), float("nan"), np.full(gx.shape, -1)
+    pos, team = g[["x_pitch", "y_pitch"]].to_numpy(), g["team"].to_numpy()
+    d2 = (gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2
+    owner = team[d2.argmin(axis=-1)]
+    return float((owner == 0).mean()), float((owner == 1).mean()), owner
+
+
+def space_control_series(df: pd.DataFrame, step_s: float = 5.0, res: float = 2.0, include_gk: bool = True) -> pd.DataFrame:
+    """Cuota de espacio de cada equipo a lo largo del tiempo (una muestra cada `step_s` segundos)."""
+    rows = []
+    for t in np.arange(df["t_seconds"].min(), df["t_seconds"].max(), step_s):
+        a, b, _ = space_control(df, t, include_gk, res)
+        if not np.isnan(a):
+            rows.append({"t_seconds": t, "equipo_0": a, "equipo_1": b})
+    return pd.DataFrame(rows, columns=["t_seconds", "equipo_0", "equipo_1"])
+
+
+def team_lines(df: pd.DataFrame, team: int, attacks_right: bool = True, k: int = 4, min_outfield: int = 6) -> pd.DataFrame:
+    """Serie temporal de estructura del equipo (jugadores de campo):
+    linea_def_m = distancia media a la propia portería de los k jugadores más retrasados (altura de la línea defensiva),
+    linea_del_m = idem de los k más adelantados, largo_m y ancho_m = extensión del equipo y dispersion_m = distancia media al centroide."""
+    import warnings
+
+    times, pos = _team_positions(df, team, roles=(ROLE_PLAYER,))
+    cols = ["t_seconds", "linea_def_m", "linea_del_m", "largo_m", "ancho_m", "dispersion_m"]
+    if len(times) == 0:
+        return pd.DataFrame(columns=cols)
+    x, y = pos[:, :, 0], pos[:, :, 1]
+    own = x if attacks_right else PITCH_L - x
+    valid = (~np.isnan(own)).sum(axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        asc = np.sort(own, axis=1)               # los NaN quedan al final
+        desc = -np.sort(-own, axis=1)
+        dist = np.hypot(x - np.nanmean(x, axis=1, keepdims=True), y - np.nanmean(y, axis=1, keepdims=True))
+        out = pd.DataFrame({
+            "t_seconds": times,
+            "linea_def_m": np.nanmean(asc[:, :k], axis=1), "linea_del_m": np.nanmean(desc[:, :k], axis=1),
+            "largo_m": np.nanmax(own, axis=1) - np.nanmin(own, axis=1),
+            "ancho_m": np.nanmax(y, axis=1) - np.nanmin(y, axis=1), "dispersion_m": np.nanmean(dist, axis=1)})
+    out.loc[valid < min_outfield, cols[1:]] = np.nan
+    return out
+
+
+def possession_phases(df: pd.DataFrame, radius_m: float = 3.0, min_s: float = 3.0, smooth_s: float = 1.0,
+                      max_gap_s: float = 2.0, attacks_right: dict | None = None) -> pd.DataFrame:
+    """Fases de posesión: tramos seguidos en los que un equipo tiene el balón (el jugador más cercano, a <= radius_m).
+    Se suaviza con un filtro de mayoría, se unen los tramos del mismo equipo separados por <= max_gap_s de balón libre
+    y se descartan las fases de menos de min_s. Devuelve inicio, fin, duración y avance del balón en metros."""
+    attacks_right = attacks_right or {0: True, 1: False}
+    pl = df[df["role"].isin([ROLE_PLAYER, ROLE_GK]) & (df["team"] >= 0)]
+    ball = df[df["role"] == ROLE_BALL].drop_duplicates("t_seconds").set_index("t_seconds").sort_index()
+    cols = ["equipo", "t_inicio", "t_fin", "duracion_s", "balon_x_inicio", "balon_x_fin", "avance_m"]
+    if ball.empty or pl.empty:
+        return pd.DataFrame(columns=cols)
+    times = ball.index.to_numpy()
+    ids = np.sort(pl["track_id"].unique())
+    pos = np.full((len(times), len(ids), 2), np.nan)
+    sub = pl[pl["t_seconds"].isin(times)]
+    pos[np.searchsorted(times, sub["t_seconds"].to_numpy()), np.searchsorted(ids, sub["track_id"].to_numpy())] = sub[["x_pitch", "y_pitch"]].to_numpy()
+    team_of = pl.groupby("track_id")["team"].agg(lambda s: s.mode().iat[0]).reindex(ids).to_numpy()
+    bxy = ball[["x_pitch", "y_pitch"]].to_numpy()
+    d = np.hypot(pos[:, :, 0] - bxy[:, None, 0], pos[:, :, 1] - bxy[:, None, 1])
+    d = np.where(np.isnan(d), np.inf, d)
+    near = d.argmin(axis=1)
+    owner = np.where(d[np.arange(len(times)), near] <= radius_m, team_of[near], -1)
+    step = float(np.median(np.diff(times))) if len(times) > 1 else 0.2
+    w = max(1, int(round(smooth_s / step)) | 1)  # ventana impar
+    if w > 1:  # filtro de mayoría sobre {-1, 0, 1}
+        votes = np.stack([np.convolve((owner == c).astype(float), np.ones(w), mode="same") for c in (-1, 0, 1)], axis=1)
+        owner = np.array([-1, 0, 1])[votes.argmax(axis=1)]
+    # tramos consecutivos
+    runs, start = [], 0
+    for i in range(1, len(owner) + 1):
+        if i == len(owner) or owner[i] != owner[start]:
+            runs.append([int(owner[start]), start, i - 1])
+            start = i
+    merged = []
+    for r in runs:  # unir tramos del mismo equipo separados por un hueco corto de balón libre
+        if (merged and r[0] >= 0 and merged[-1][0] == r[0]):
+            merged[-1][2] = r[2]
+        elif (len(merged) >= 2 and r[0] >= 0 and merged[-1][0] == -1 and merged[-2][0] == r[0]
+              and (times[merged[-1][2]] - times[merged[-1][1]] + step) <= max_gap_s):
+            merged.pop()
+            merged[-1][2] = r[2]
+        else:
+            merged.append(r)
+    rows = []
+    for team, a, b in merged:
+        dur = float(times[b] - times[a] + step)
+        if team < 0 or dur < min_s:
+            continue
+        x0, x1 = float(bxy[a, 0]), float(bxy[b, 0])
+        adv = (x1 - x0) if attacks_right.get(team, True) else (x0 - x1)
+        rows.append({"equipo": team, "t_inicio": float(times[a]), "t_fin": float(times[b]), "duracion_s": dur,
+                     "balon_x_inicio": x0, "balon_x_fin": x1, "avance_m": adv})
+    return pd.DataFrame(rows, columns=cols)

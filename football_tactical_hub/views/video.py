@@ -8,9 +8,11 @@ import streamlit as st
 from mplsoccer import Pitch
 
 from core import load_scope
+import metrica_data
+import track_repair
 from video_analysis import (PITCH_L, PITCH_W, ROLE_BALL, ROLE_GK, ROLE_PLAYER, ROLE_REF, _event_arrays, _team_positions, best_offset,
                             events_video_time, make_demo_tracks, player_metrics, possession_proxy, statsbomb_to_pitch, sync_score,
-                            team_shape, validate_tracks)
+                            possession_phases, space_control, space_control_series, team_lines, team_shape, validate_tracks)
 
 st.title("🎥 Vídeo: seguimiento táctico")
 st.markdown(
@@ -19,11 +21,25 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------- origen de los datos
-src = st.radio("Origen de los datos", ["Datos de demostración", "Subir tracks.parquet", "Desde el analizador (API)"], horizontal=True)
+src = st.radio("Origen de los datos", ["Datos de demostración", "Metrica Sports (datos reales)", "Subir tracks.parquet", "Desde el analizador (API)"], horizontal=True)
 if src == "Datos de demostración":
     if st.button("Cargar demostración (60 s, 22 jugadores)"):
         st.session_state["video_tracks"] = make_demo_tracks(60)
         st.session_state["video_label"] = "Demostración sintética"
+elif src == "Metrica Sports (datos reales)":
+    st.caption("Seguimiento **real** a 25 Hz de un partido de muestra anonimizado que Metrica Sports publica en GitHub "
+               "(github.com/metrica-sports/sample-data). Se descarga al pulsar el botón (≈ 65 MB) y se reduce a 5 Hz. "
+               "Úsalo de forma responsable, como pide su repositorio.")
+    g = st.radio("Partido de muestra", [1, 2], horizontal=True, key="metrica_game")
+    if st.button("Cargar datos reales de Metrica"):
+        with st.spinner("Descargando y procesando el partido…"):
+            try:
+                tracks, _ = metrica_data.load_open_game(int(g), hz=5.0)
+                st.session_state["video_tracks"] = tracks
+                st.session_state["video_label"] = f"Metrica Sports · partido de muestra {g} (5 Hz)"
+                st.session_state["dir_a"] = "la derecha"
+            except Exception as e:
+                st.error(f"No se pudieron descargar los datos de Metrica: {e}")
 elif src == "Subir tracks.parquet":
     up = st.file_uploader("Archivo tracks.parquet", type=["parquet"])
     if up is not None:
@@ -55,6 +71,10 @@ except ValueError as e:
     st.error(str(e))
     st.stop()
 
+_label = st.session_state.get("video_label")
+if st.session_state.get("video_fixed") is not None and st.session_state.get("video_fixed_label") == _label:
+    df = st.session_state["video_fixed"]
+    st.success("Se están usando las **trayectorias corregidas** (pestaña «🧵 Corregir IDs»).")
 st.caption(f"Fuente: {st.session_state.get('video_label', '—')} · {df['frame'].nunique():,} fotogramas · "
            f"{df.loc[df['role'].isin([ROLE_PLAYER, ROLE_GK]), 'track_id'].nunique()} jugadores seguidos · "
            f"{df['t_seconds'].max():.0f} s")
@@ -72,7 +92,12 @@ def new_pitch(figsize=(9, 6)):
 def flip(y):
     return PITCH_W - np.asarray(y, dtype=float)
 
-tabs = st.tabs(["📍 Posiciones", "🔥 Mapas de calor", "🏃 Rendimiento", "🧩 Forma del equipo", "⚽ Posesión", "🔗 Eventos StatsBomb"])
+# Dirección de ataque del equipo A: la usan las líneas, la estructura y las fases de juego
+dir_choice = st.radio("El Equipo A ataca en el vídeo hacia…", ["la derecha", "la izquierda"], horizontal=True, key="dir_a")
+ATT = {0: dir_choice == "la derecha", 1: dir_choice != "la derecha"}
+
+tabs = st.tabs(["📍 Posiciones", "🔥 Mapas de calor", "🏃 Rendimiento", "🧩 Forma del equipo", "⚽ Posesión", "🔗 Eventos StatsBomb",
+                "🧭 Control del espacio", "📐 Líneas y compacidad", "🧱 Fases de juego", "🧵 Corregir IDs"])
 
 # ---------------------------------------------------------------- posiciones
 with tabs[0]:
@@ -121,7 +146,7 @@ with tabs[2]:
         show.columns = ["Jugador (id)", "Equipo", "Segundos", "Distancia (m)", "Vel. media (km/h)", "Vel. máx. (km/h)", "Sprint (s)"]
         st.dataframe(show, hide_index=True, width="stretch")
         st.bar_chart(m.assign(jugador="#" + m["track_id"].astype(str)).set_index("jugador")["distance_m"], height=280)
-        st.caption("Posición suavizada; se ignoran saltos de más de 12,5 m/s y huecos de seguimiento de más de 1 s (suelen ser cambios de ID).")
+        st.caption("Posición suavizada; se ignoran saltos de más de 11 m/s (40 km/h) y huecos de seguimiento de más de 1 s (suelen ser cambios de ID).")
         st.download_button("⬇️ Descargar métricas (CSV)", m.to_csv(index=False).encode("utf-8"), file_name="metricas_jugadores.csv", mime="text/csv")
 
 # ---------------------------------------------------------------- forma
@@ -244,3 +269,187 @@ with tabs[5]:
     else:
         st.caption("No hay eventos en esa ventana de tiempo.")
     st.caption("Círculos: jugadores seguidos en el vídeo. Rombos y estrellas: eventos de StatsBomb (estrella = tiro).")
+
+
+# ---------------------------------------------------------------- control del espacio (Voronoi)
+with tabs[6]:
+    st.markdown("Cada punto del campo se asigna al **equipo del jugador más cercano** (diagramas de Voronoi). Es una medida simple de "
+                "territorio: no tiene en cuenta velocidades ni al balón.")
+    tmax = float(df["t_seconds"].max())
+    t_sp = st.slider("Instante (s)", 0.0, tmax, min(tmax, 30.0), step=1.0, key="space_t")
+    a, b, owner = space_control(df, t_sp, include_gk=True, res=1.0)
+    if np.isnan(a):
+        st.info("En ese instante no hay jugadores de los dos equipos.")
+    else:
+        from matplotlib.colors import ListedColormap
+
+        m1, m2 = st.columns(2)
+        m1.metric(names[0], f"{a * 100:.0f} % del campo")
+        m2.metric(names[1], f"{b * 100:.0f} % del campo")
+        pitch, fig, ax = new_pitch()
+        ax.imshow(owner, extent=[0, PITCH_L, 0, PITCH_W], origin="upper", cmap=ListedColormap([COLORS[0], COLORS[1]]),
+                  vmin=0, vmax=1, alpha=0.40, zorder=1, interpolation="nearest")
+        now = df.iloc[(df["t_seconds"] - t_sp).abs().argsort()[:1]]["t_seconds"].iat[0]
+        cur_sp = df[((df["t_seconds"] - now).abs() < 1e-6) & df["role"].isin([ROLE_PLAYER, ROLE_GK, ROLE_BALL])]
+        for team, g in cur_sp[cur_sp["role"] != ROLE_BALL].groupby("team"):
+            pitch.scatter(g["x_pitch"], flip(g["y_pitch"]), ax=ax, s=120, c=COLORS[int(team)], edgecolors="black", zorder=5)
+        ball = cur_sp[cur_sp["role"] == ROLE_BALL]
+        if len(ball):
+            pitch.scatter(ball["x_pitch"], flip(ball["y_pitch"]), ax=ax, s=60, c="white", edgecolors="black", zorder=6)
+        st.pyplot(fig)
+        plt.close(fig)
+    key = ("space", st.session_state.get("video_label"), len(df))
+    if st.session_state.get("space_key") != key:
+        with st.spinner("Calculando la evolución del control del espacio…"):
+            st.session_state["space_series"] = space_control_series(df, step_s=max(5.0, tmax / 400), res=2.0)
+            st.session_state["space_key"] = key
+    ser = st.session_state["space_series"]
+    if len(ser):
+        roll = ser.set_index(ser["t_seconds"] / 60)[["equipo_0", "equipo_1"]].rolling(6, min_periods=1).mean()
+        roll.columns = [names[0], names[1]]
+        st.line_chart(roll, height=220)
+        st.caption("Cuota de campo de cada equipo a lo largo del tiempo (eje: minutos; suavizado).")
+
+# ---------------------------------------------------------------- líneas y compacidad
+with tabs[7]:
+    st.markdown("Altura de la **línea defensiva** (los 4 jugadores de campo más retrasados), extensión del equipo y dispersión alrededor de su centroide.")
+    lines = {team: team_lines(df, team, ATT[team]) for team in (0, 1)}
+    if all(len(v) == 0 for v in lines.values()):
+        st.info("No hay jugadores de campo de ningún equipo.")
+    else:
+        metric = st.selectbox("Métrica", ["linea_def_m", "linea_del_m", "largo_m", "ancho_m", "dispersion_m"],
+                              format_func=lambda k: {"linea_def_m": "Altura de la línea defensiva (m desde su portería)", "linea_del_m": "Altura de la línea de ataque (m)",
+                                                     "largo_m": "Largo del equipo (m)", "ancho_m": "Ancho del equipo (m)", "dispersion_m": "Dispersión (m al centroide)"}[k], key="lines_metric")
+        chart = {}
+        for team in (0, 1):
+            ln = lines[team]
+            if len(ln):
+                chart[names[team]] = ln.set_index(ln["t_seconds"] / 60)[metric].rolling(30, min_periods=1).mean()
+        st.line_chart(pd.DataFrame(chart), height=260)
+        st.caption("Eje: minutos de vídeo. Suavizado con una media móvil. La dirección de ataque se elige arriba.")
+        rows = [{"Equipo": names[t], "Línea defensiva (m)": round(lines[t]["linea_def_m"].mean(), 1), "Línea de ataque (m)": round(lines[t]["linea_del_m"].mean(), 1),
+                 "Largo (m)": round(lines[t]["largo_m"].mean(), 1), "Ancho (m)": round(lines[t]["ancho_m"].mean(), 1),
+                 "Dispersión (m)": round(lines[t]["dispersion_m"].mean(), 1)} for t in (0, 1) if len(lines[t])]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+# ---------------------------------------------------------------- fases de juego
+with tabs[8]:
+    st.markdown("Una **fase de posesión** es un tramo seguido en el que un equipo tiene el balón (el jugador más cercano, a menos de la distancia elegida). "
+                "Se unen los tramos separados por un balón libre muy breve.")
+    c1, c2, c3 = st.columns(3)
+    rad = c1.slider("Distancia jugador-balón (m)", 1.0, 6.0, 3.0, 0.5, key="ph_rad")
+    min_s = c2.slider("Duración mínima (s)", 1.0, 15.0, 3.0, 0.5, key="ph_min")
+    gap = c3.slider("Hueco máximo de balón libre (s)", 0.0, 5.0, 2.0, 0.5, key="ph_gap")
+    ph = possession_phases(df, rad, min_s, max_gap_s=gap, attacks_right=ATT)
+    if ph.empty:
+        st.info("No se detectaron fases con estos parámetros (¿hay balón en el seguimiento?).")
+    else:
+        k = st.columns(4)
+        k[0].metric("Fases", len(ph))
+        for i, team in enumerate((0, 1)):
+            sub_ph = ph[ph["equipo"] == team]
+            k[1 + i].metric(f"{names[team]}: fases · media", f"{len(sub_ph)} · {sub_ph['duracion_s'].mean():.0f} s" if len(sub_ph) else "—")
+        k[3].metric("Fase más larga", f"{ph['duracion_s'].max():.0f} s")
+        fig, ax = plt.subplots(figsize=(10, 1.8))
+        for team in (0, 1):
+            sub_ph = ph[ph["equipo"] == team]
+            ax.broken_barh(list(zip(sub_ph["t_inicio"] / 60, sub_ph["duracion_s"] / 60)), (team * 10, 8), facecolors=COLORS[team])
+        ax.set_yticks([4, 14]); ax.set_yticklabels([names[0], names[1]]); ax.set_xlabel("Minutos de vídeo")
+        ax.spines[["top", "right"]].set_visible(False)
+        st.pyplot(fig)
+        plt.close(fig)
+        show = ph.assign(equipo=ph["equipo"].map(names), t_inicio=(ph["t_inicio"] / 60).round(2), t_fin=(ph["t_fin"] / 60).round(2)).round(1)
+        show.columns = ["Equipo", "Inicio (min)", "Fin (min)", "Duración (s)", "Balón x inicio (m)", "Balón x fin (m)", "Avance hacia la portería rival (m)"]
+        st.dataframe(show.sort_values("Duración (s)", ascending=False), hide_index=True, width="stretch", height=300)
+        st.download_button("⬇️ Descargar fases (CSV)", ph.to_csv(index=False).encode("utf-8"), file_name="fases_de_posesion.csv", mime="text/csv")
+
+
+# ---------------------------------------------------------------- corrección de identidades
+with tabs[9]:
+    st.markdown(
+        "Un seguidor automático suele **partir a un jugador en varias trayectorias** (le da un ID nuevo al reaparecer). Aquí se **cosen** "
+        "de forma automática cuando es físicamente plausible (mismo equipo, sin solaparse y donde el jugador habría llegado) y se pueden "
+        "corregir a mano. Las demás pestañas usan automáticamente los datos corregidos."
+    )
+    if st.session_state.get("video_fixed_label") != _label:
+        st.session_state["video_fixed"], st.session_state["video_fix_history"], st.session_state["video_fixed_label"] = None, [], _label
+    work = df.copy()
+    hist = st.session_state.setdefault("video_fix_history", [])
+
+    def commit(new_df, msg):
+        hist.append(st.session_state.get("video_fixed") if st.session_state.get("video_fixed") is not None else raw_valid)
+        st.session_state["video_fixed"] = new_df
+        st.session_state["video_fixed_label"] = _label
+        st.session_state["fix_msg"] = msg
+        st.rerun()
+
+    raw_valid = validate_tracks(raw)
+    frag = track_repair.fragmentation(work)
+    k = st.columns(4)
+    k[0].metric("Trayectorias de jugador", frag["tracks"], help="Un partido 11 contra 11 debería tener unas 22 (más cambios y expulsiones).")
+    k[1].metric("Respecto a las esperadas (22)", f"× {frag['ratio']}")
+    k[2].metric("Duración mediana (s)", frag["median_s"])
+    k[3].metric("Tiempo en trayectorias largas", f"{frag['share_in_long'] * 100:.0f} %")
+    if st.session_state.get("fix_msg"):
+        st.success(st.session_state.pop("fix_msg"))
+
+    st.markdown("#### 1) Coser automáticamente")
+    c1, c2, c3 = st.columns(3)
+    gap = c1.slider("Hueco máximo (s)", 1.0, 10.0, 4.0, 0.5, key="fix_gap")
+    dist = c2.slider("Error de predicción máximo (m)", 2.0, 25.0, 8.0, 1.0, key="fix_dist")
+    links = track_repair.suggest_links(work, max_gap_s=gap, max_dist_m=dist)
+    c3.metric("Uniones propuestas", len(links))
+    if len(links):
+        with st.expander("Ver las uniones propuestas (de menor a mayor coste)"):
+            st.dataframe(links.round(2), hide_index=True, width="stretch")
+    b1, b2 = st.columns(2)
+    if b1.button("🧵 Aplicar las uniones", type="primary", disabled=len(links) == 0):
+        fixed = track_repair.apply_links(work, links)
+        commit(fixed, f"{len(links)} uniones aplicadas: de {frag['tracks']} a {track_repair.fragmentation(fixed)['tracks']} trayectorias.")
+    if b2.button("↩️ Deshacer el último cambio", disabled=not hist):
+        prev = hist.pop()
+        st.session_state["video_fixed"] = None if prev is raw_valid else prev
+        st.rerun()
+
+    st.markdown("#### 2) Corregir a mano")
+    summ = track_repair.track_summary(work)
+    summ = summ[summ["role"] != ROLE_BALL].sort_values("t0")
+    ids = summ["track_id"].tolist()
+    if ids:
+        fmt = lambda i: (lambda r: f"#{i} · {names[int(r.team)]} · {r.t0 / 60:.1f}–{r.t1 / 60:.1f} min")(summ[summ["track_id"] == i].iloc[0])
+        m1, m2, m3 = st.columns([2, 2, 1])
+        keep = m1.selectbox("Mantener la trayectoria", ids, format_func=fmt, key="fix_keep")
+        drop = m2.selectbox("…y unirle esta otra", [i for i in ids if i != keep], format_func=fmt, key="fix_drop")
+        m3.write("")
+        if m3.button("Unir"):
+            try:
+                commit(track_repair.merge_tracks(work, int(keep), int(drop)), f"#{drop} unido a #{keep}.")
+            except ValueError as e:
+                st.error(str(e))
+        s1, s2, s3 = st.columns([2, 2, 1])
+        cut_id = s1.selectbox("Dividir la trayectoria", ids, format_func=fmt, key="fix_cut")
+        row = summ[summ["track_id"] == cut_id].iloc[0]
+        t_cut = s2.slider("Instante de corte (s)", float(row.t0), float(row.t1), float((row.t0 + row.t1) / 2), key="fix_cut_t")
+        s3.write("")
+        if s3.button("Dividir"):
+            try:
+                out, new_id = track_repair.split_track(work, int(cut_id), float(t_cut))
+                commit(out, f"#{cut_id} dividido: lo posterior pasa a #{new_id}.")
+            except ValueError as e:
+                st.error(str(e))
+        a1, a2, a3, a4 = st.columns([2, 1, 1, 1])
+        sel = a1.selectbox("Cambiar atributos de", ids, format_func=fmt, key="fix_attr")
+        team_new = a2.selectbox("Equipo", [0, 1, -1], format_func=lambda k: names[k], key="fix_team")
+        role_new = a3.selectbox("Rol", [ROLE_PLAYER, ROLE_GK, ROLE_REF], format_func=lambda r: {0: "Jugador", 1: "Portero", 2: "Árbitro"}[r], key="fix_role")
+        a4.write("")
+        if a4.button("Aplicar"):
+            commit(track_repair.set_attrs(work, int(sel), team_new, role_new), f"#{sel} actualizado.")
+        if st.button("🗑️ Eliminar la trayectoria seleccionada arriba"):
+            commit(track_repair.delete_track(work, int(sel)), f"#{sel} eliminado.")
+
+    st.markdown("#### 3) Resultado")
+    show = summ.assign(Equipo=summ["team"].map(names), inicio=(summ["t0"] / 60).round(2), fin=(summ["t1"] / 60).round(2),
+                       duracion_s=(summ["t1"] - summ["t0"]).round(1))[["track_id", "Equipo", "role", "inicio", "fin", "duracion_s", "n"]]
+    show.columns = ["ID", "Equipo", "Rol", "Inicio (min)", "Fin (min)", "Duración (s)", "Muestras"]
+    st.dataframe(show, hide_index=True, width="stretch", height=260)
+    st.download_button("⬇️ Descargar trayectorias corregidas (CSV)", work.to_csv(index=False).encode("utf-8"), file_name="tracks_corregidos.csv", mime="text/csv")

@@ -9,7 +9,7 @@ Hub multipágina en **Streamlit** para explorar equipos, jugadores y competicion
 - **Comparador de equipos**: dos equipos frente a frente con todas las fuentes cruzadas e historial de enfrentamientos directos.
 - **Jugador**: partidos jugados, comparativa por 90 minutos y mapa agregado.
 - **Análisis de partido**: mapas tácticos de un partido.
-- **Vídeo (seguimiento)**: analiza el `tracks.parquet` del módulo `football-vision-analyzer` (repositorio aparte) (demo, subida o API): mapas de calor, distancia y velocidad por jugador, forma del equipo y posesión aproximada, y **cruce con los eventos de StatsBomb** (busca solo el desfase vídeo-eventos).
+- **Vídeo (seguimiento)**: analiza el `tracks.parquet` del módulo `football-vision-analyzer` (repositorio aparte) (demo, subida o API): mapas de calor, distancia y velocidad por jugador, forma del equipo y posesión aproximada, **control del espacio (Voronoi), líneas y compacidad, fases de posesión**, **corrección de identidades** (cosido automático de trayectorias partidas + unir/dividir a mano con deshacer) y **cruce con los eventos de StatsBomb** (busca solo el desfase vídeo-eventos). Incluye **datos reales de Metrica Sports** (seguimiento a 25 Hz de un partido de muestra) para probar sin vídeo.
 - **Fuentes de datos**: Understat, football-data.co.uk, football-data.org y API-Football, con esquema unificado, equivalencias de nombres y estado del almacén.
 
 ## Fuentes
@@ -34,7 +34,10 @@ football_hub_v2/
 ├── core.py             # StatsBomb: catálogo, eventos, estadísticas
 ├── normalize.py        # normalización de nombres (alias propios en data/team_aliases.csv)
 ├── warehouse.py        # almacén Parquet de partidos normalizados
-├── video_analysis.py   # métricas sobre los datos de seguimiento del vídeo
+├── video_analysis.py   # métricas y análisis táctico sobre los datos de seguimiento
+├── track_repair.py     # cosido y corrección de identidades de trayectorias
+├── metrica_data.py     # adaptador de los datos abiertos de Metrica Sports
+├── docs/               # estudio de Metrica y de replicabilidad con código abierto
 ├── sources/            # un adaptador por fuente + esquema unificado
 ├── scripts/ingest.py   # ingesta de datos al almacén
 ├── data/               # almacén (warehouse/) y alias de equipos
